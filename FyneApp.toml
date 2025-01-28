@@ -1,0 +1,6 @@
+[Details]
+  Icon = "Icon.png"
+  Name = "llmchat"
+  ID = "llm.chat.com"
+  Version = "0.0.1"
+  Build = 1
