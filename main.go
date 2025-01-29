@@ -29,9 +29,40 @@ type Chat struct {
 	Messages []ChatMessage
 }
 
+// Custom entry widget that implements Focusable
+type CustomEntry struct {
+	widget.Entry
+	onEnter func()
+}
+
+func NewCustomEntry() *CustomEntry {
+	entry := &CustomEntry{}
+	entry.ExtendBaseWidget(entry)
+	entry.Wrapping = fyne.TextWrapWord
+	entry.MultiLine = true
+	return entry
+}
+
+// TypedKey handles keyboard events for the CustomEntry
+// - Enter: Triggers the onEnter callback (sends message)
+// - Shift+Enter: Adds a new line to the text input
+func (e *CustomEntry) TypedKey(key *fyne.KeyEvent) {
+	fmt.Printf("Key pressed: %v\n", key.Name)
+	if key.Name == fyne.KeyReturn {
+		if fyne.KeyModifierShift != 0 {
+			e.Entry.TypedKey(key) // Shift+Enter: new line
+		} else if e.onEnter != nil {
+			e.onEnter() // Enter: custom action
+		}
+		return
+	}
+	e.Entry.TypedKey(key)
+
+}
+
 // Global variables
 var (
-	currentModel    string
+	currentModel   string
 	mainScroll     *container.Scroll
 	chats          []Chat
 	currentChat    *Chat
@@ -57,7 +88,7 @@ func main() {
 
 	// Initialize chat containers map
 	chatContainers = make(map[int]*fyne.Container)
-	
+
 	// Main container to hold current chat messages
 	mainContainer = container.NewVBox()
 	messagesContainer := container.NewPadded(mainContainer)
@@ -94,10 +125,10 @@ func main() {
 		}
 	}
 
-	// Styled input field
-	input := widget.NewMultiLineEntry()
-	input.SetPlaceHolder("Type your message...")
-	input.SetMinRowsVisible(3)
+	// Custom input field with Enter key handling
+	input := NewCustomEntry()
+	input.SetPlaceHolder("Type your message... (Press Enter to send, Shift+Enter for new line)")
+
 	input.Resize(fyne.NewSize(500, 60))
 
 	// Styled send button
@@ -174,9 +205,8 @@ func main() {
 	send := widget.NewButtonWithIcon("Send", theme.MailSendIcon(), sendFunc)
 	send.Resize(fyne.NewSize(100, 60))
 
-	input.OnSubmitted = func(s string) {
-		sendFunc()
-	}
+	// Set up Enter key handling
+	input.onEnter = sendFunc
 
 	// Create a container with layout that respects sizes
 	inputWrapper := container.NewHBox(layout.NewSpacer())
@@ -209,6 +239,10 @@ func main() {
 	content.SetOffset(0.2)
 
 	w.SetContent(content)
+	w.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
+		fmt.Printf("Key pressed: %v\n", key.Name)
+		// Add additional key handling logic here
+	})
 	w.ShowAndRun()
 }
 
@@ -229,7 +263,7 @@ func AddMessage(chatID int, text, sender string, isAI bool) {
 			IsAI:   isAI,
 		}
 		targetChat.Messages = append(targetChat.Messages, msg)
-		
+
 		// Update chat title with first part of user message (if not already set)
 		if !isAI && targetChat.Title == fmt.Sprintf("Chat %d", targetChat.ID) {
 			// Split text by common sentence delimiters and take first part
@@ -290,7 +324,7 @@ func AddMessage(chatID int, text, sender string, isAI bool) {
 	))
 
 	msgContainer.Refresh()
-	
+
 	// If this is the current chat, refresh scroll
 	if currentChat != nil && currentChat.ID == chatID {
 		mainScroll.ScrollToBottom()
@@ -306,18 +340,18 @@ func createNewChat() *Chat {
 	}
 	chats = append(chats, *chat)
 	currentChat = chat
-	
+
 	// Create new message container for this chat
 	chatContainers[chat.ID] = container.NewVBox()
-	
+
 	// Add welcome message
 	welcomeMessage := "How can I help you today?"
 	AddMessage(chat.ID, welcomeMessage, "AI", true)
-	
+
 	// Switch to the new chat container
 	mainContainer.Objects = []fyne.CanvasObject{chatContainers[chat.ID]}
 	mainContainer.Refresh()
-	
+
 	chatList.Refresh()
 	return chat
 }
@@ -326,21 +360,21 @@ func switchToChat(chat *Chat) {
 	if chat == nil {
 		return
 	}
-	
+
 	currentChat = chat
-	
+
 	// Get or create message container for this chat
 	msgContainer, exists := chatContainers[chat.ID]
 	if !exists {
 		msgContainer = container.NewVBox()
 		chatContainers[chat.ID] = msgContainer
-		
+
 		// If this is the first time viewing this chat, display its messages
 		for _, msg := range chat.Messages {
 			AddMessage(chat.ID, msg.Text, msg.Sender, msg.IsAI)
 		}
 	}
-	
+
 	// Switch to this chat's message container
 	mainContainer.Objects = []fyne.CanvasObject{msgContainer}
 	mainContainer.Refresh()
