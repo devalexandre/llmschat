@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -22,10 +23,21 @@ type ChatMessage struct {
 	IsAI   bool
 }
 
+type Chat struct {
+	ID       int
+	Title    string
+	Messages []ChatMessage
+}
+
 // Global variables
 var (
-	currentModel string
-	mainScroll   *container.Scroll
+	currentModel    string
+	mainScroll     *container.Scroll
+	chats          []Chat
+	currentChat    *Chat
+	chatList       *widget.List
+	chatContainers map[int]*fyne.Container // Map to store message containers for each chat
+	mainContainer  *fyne.Container         // Container to hold current chat messages
 )
 
 func main() {
@@ -43,9 +55,12 @@ func main() {
 	w := a.NewWindow("AI Chat")
 	w.Resize(fyne.NewSize(900, 700))
 
-	// Chat messages container with padding
-	messages := container.NewVBox()
-	messagesContainer := container.NewPadded(messages)
+	// Initialize chat containers map
+	chatContainers = make(map[int]*fyne.Container)
+	
+	// Main container to hold current chat messages
+	mainContainer = container.NewVBox()
+	messagesContainer := container.NewPadded(mainContainer)
 	mainScroll = container.NewScroll(messagesContainer)
 	mainScroll.SetMinSize(fyne.NewSize(600, 600))
 
@@ -87,12 +102,24 @@ func main() {
 
 	// Styled send button
 	sendFunc := func() {
+		if currentChat == nil {
+			return
+		}
+
 		userMessage := input.Text
 		if userMessage != "" {
-			AddMessage(messages, userMessage, "You", false)
+			// Add user message
+			AddMessage(currentChat.ID, userMessage, "You", false)
 			input.SetText("")
+
 			// Get AI response with current model in stream mode
 			go func() {
+				// Get chat container
+				msgContainer := chatContainers[currentChat.ID]
+				if msgContainer == nil {
+					return
+				}
+
 				// Create initial AI message container
 				aiMessage := container.NewVBox()
 				senderLabel := widget.NewLabel("AI")
@@ -100,12 +127,13 @@ func main() {
 
 				loadingLabel := widget.NewLabel("Loading...")
 				aiMessage.Add(loadingLabel)
-				messages.Refresh()
+				msgContainer.Refresh()
 
 				stream, err := llm.GetResponseStream(userMessage, currentModel)
 				aiMessage.Remove(loadingLabel)
 				if err != nil {
-					AddMessage(messages, fmt.Sprintf("Error: %v", err), "System", true)
+					errMsg := fmt.Sprintf("Error: %v", err)
+					AddMessage(currentChat.ID, errMsg, "System", true)
 					return
 				}
 
@@ -120,15 +148,25 @@ func main() {
 				aiMessage.Add(senderLabel)
 				aiMessage.Add(messageContainer)
 				aiMessage.Add(widget.NewSeparator())
-				messages.Add(aiMessage)
+				msgContainer.Add(aiMessage)
 
 				fullText := ""
 				for chunk := range stream {
 					fullText += chunk
 					messageLabel.ParseMarkdown(fullText)
 					messageLabel.Refresh()
-					mainScroll.ScrollToBottom()
+					if currentChat.ID == currentChat.ID {
+						mainScroll.ScrollToBottom()
+					}
 				}
+
+				// After streaming is complete, store the AI response in chat history
+				msg := ChatMessage{
+					Text:   fullText,
+					Sender: "AI",
+					IsAI:   true,
+				}
+				currentChat.Messages = append(currentChat.Messages, msg)
 			}()
 		}
 	}
@@ -174,7 +212,51 @@ func main() {
 	w.ShowAndRun()
 }
 
-func AddMessage(messages *fyne.Container, text, sender string, isAI bool) {
+func AddMessage(chatID int, text, sender string, isAI bool) {
+	// Find chat by ID
+	var targetChat *Chat
+	for i := range chats {
+		if chats[i].ID == chatID {
+			targetChat = &chats[i]
+			break
+		}
+	}
+
+	if targetChat != nil {
+		msg := ChatMessage{
+			Text:   text,
+			Sender: sender,
+			IsAI:   isAI,
+		}
+		targetChat.Messages = append(targetChat.Messages, msg)
+		
+		// Update chat title with first part of user message (if not already set)
+		if !isAI && targetChat.Title == fmt.Sprintf("Chat %d", targetChat.ID) {
+			// Split text by common sentence delimiters and take first part
+			delimiters := []string{"?", ".", "!", "\n"}
+			title := text
+			for _, delimiter := range delimiters {
+				if parts := strings.Split(text, delimiter); len(parts) > 0 {
+					title = parts[0]
+					break
+				}
+			}
+			// Truncate title if too long
+			if len(title) > 30 {
+				title = title[:27] + "..."
+			}
+			targetChat.Title = title
+			chatList.Refresh()
+		}
+	}
+
+	// Get or create chat container
+	msgContainer, exists := chatContainers[chatID]
+	if !exists {
+		msgContainer = container.NewVBox()
+		chatContainers[chatID] = msgContainer
+	}
+
 	// Create standard text label
 	messageLabel := widget.NewRichTextFromMarkdown(text)
 
@@ -201,13 +283,67 @@ func AddMessage(messages *fyne.Container, text, sender string, isAI bool) {
 	senderLabel.TextStyle = fyne.TextStyle{Italic: true}
 
 	// Add message with padding
-	messages.Add(container.NewVBox(
+	msgContainer.Add(container.NewVBox(
 		senderLabel,
 		messageContainer,
 		widget.NewSeparator(),
 	))
 
-	messages.Refresh()
+	msgContainer.Refresh()
+	
+	// If this is the current chat, refresh scroll
+	if currentChat != nil && currentChat.ID == chatID {
+		mainScroll.ScrollToBottom()
+	}
+}
+
+func createNewChat() *Chat {
+	newID := len(chats) + 1
+	chat := &Chat{
+		ID:       newID,
+		Title:    fmt.Sprintf("Chat %d", newID),
+		Messages: make([]ChatMessage, 0),
+	}
+	chats = append(chats, *chat)
+	currentChat = chat
+	
+	// Create new message container for this chat
+	chatContainers[chat.ID] = container.NewVBox()
+	
+	// Add welcome message
+	welcomeMessage := "How can I help you today?"
+	AddMessage(chat.ID, welcomeMessage, "AI", true)
+	
+	// Switch to the new chat container
+	mainContainer.Objects = []fyne.CanvasObject{chatContainers[chat.ID]}
+	mainContainer.Refresh()
+	
+	chatList.Refresh()
+	return chat
+}
+
+func switchToChat(chat *Chat) {
+	if chat == nil {
+		return
+	}
+	
+	currentChat = chat
+	
+	// Get or create message container for this chat
+	msgContainer, exists := chatContainers[chat.ID]
+	if !exists {
+		msgContainer = container.NewVBox()
+		chatContainers[chat.ID] = msgContainer
+		
+		// If this is the first time viewing this chat, display its messages
+		for _, msg := range chat.Messages {
+			AddMessage(chat.ID, msg.Text, msg.Sender, msg.IsAI)
+		}
+	}
+	
+	// Switch to this chat's message container
+	mainContainer.Objects = []fyne.CanvasObject{msgContainer}
+	mainContainer.Refresh()
 	mainScroll.ScrollToBottom()
 }
 
@@ -218,8 +354,23 @@ func createSidebar(w fyne.Window) fyne.CanvasObject {
 
 	// Create new chat button
 	newChatBtn := widget.NewButtonWithIcon("New Chat", theme.ContentAddIcon(), func() {
-		// Implement new chat functionality
+		createNewChat()
 	})
+
+	// Create chat list
+	chatList = widget.NewList(
+		func() int { return len(chats) },
+		func() fyne.CanvasObject {
+			return widget.NewLabel("Template Chat")
+		},
+		func(id widget.ListItemID, item fyne.CanvasObject) {
+			label := item.(*widget.Label)
+			label.SetText(chats[id].Title)
+		},
+	)
+	chatList.OnSelected = func(id widget.ListItemID) {
+		switchToChat(&chats[id])
+	}
 
 	// Create settings button
 	settingsBtn := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), func() {
@@ -242,8 +393,13 @@ func createSidebar(w fyne.Window) fyne.CanvasObject {
 			settingsBtn,
 		),
 		nil, nil,
-		layout.NewSpacer(), // This spacer pushes settings to bottom
+		chatList, // Add chat list in the middle
 	)
+
+	// Create initial chat if none exists
+	if len(chats) == 0 {
+		createNewChat()
+	}
 
 	return container.NewPadded(content)
 }
